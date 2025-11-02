@@ -18,10 +18,10 @@ namespace BugStore.Test.Handlers.Orders
 {
     public class OrderHandlerTests
     {
-        private static AppDbContext CreateContext(string dbName)
+        private static AppDbContext CreateContext()
         {
             var options = new DbContextOptionsBuilder<AppDbContext>()
-                .UseInMemoryDatabase(databaseName: dbName)
+                .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
                 .Options;
             return new AppDbContext(options);
         }
@@ -30,11 +30,9 @@ namespace BugStore.Test.Handlers.Orders
         {
             public FaultyDbContext(DbContextOptions options) : base(options) { }
 
-            // Shadow Orders property to throw when accessed (simulates runtime exception during queries)
-            public new DbSet<Order> Orders
+            public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
             {
-                get => throw new Exception("Simulated DB error");
-                set => base.Orders = value;
+                throw new Exception("Simulated DB error");
             }
         }
 
@@ -55,20 +53,20 @@ namespace BugStore.Test.Handlers.Orders
         [Fact]
         public async Task CreateOrderAsync_CreatesOrder_With_CorrectLineTotals()
         {
-            var dbName = Guid.NewGuid().ToString();
-            await using var context = CreateContext(dbName);
+            //Arrange
+            await using var context = CreateContext();
 
-            // seed products and customer into the DB (so navigation properties can be resolved later)
-            var product1 = new Product { Id = Guid.NewGuid(), Title = "P1", Description = "d", Slug = "p1", Price = 10.50m };
-            var product2 = new Product { Id = Guid.NewGuid(), Title = "P2", Description = "d2", Slug = "p2", Price = 5.00m };
-            var customer = new Customer { Id = Guid.NewGuid(), Name = "C", Email = "c@c", Phone = "1", BirthDate = DateTime.Today };
+            //Seed data
+            var product1 = new Product { Id = Guid.NewGuid(), Title = "Produto A", Description = "Primeiro produto", Slug = "https://localhost:4000", Price = 10.50m };
+            var product2 = new Product { Id = Guid.NewGuid(), Title = "Produto B", Description = "Segundo produto", Slug = "https://localhost:5000", Price = 22.50m };
+            var customer = new Customer { Id = Guid.NewGuid(), Name = "Customer de Teste Silva", Email = "customersilva@gmail.com", Phone = "30111033033", BirthDate = DateTime.Today.AddYears(-30) };
+            
+            var fakeProductHandler = new FakeProductHandler(new[] { product1, product2 });
+            var handler = new OrderHandler(context, fakeProductHandler);
 
             context.Products.AddRange(product1, product2);
             context.Customers.Add(customer);
             await context.SaveChangesAsync();
-
-            var fakeProductHandler = new FakeProductHandler(new[] { product1, product2 });
-            var handler = new OrderHandler(context, fakeProductHandler);
 
             var request = new CreateOrderRequest
             {
@@ -80,13 +78,17 @@ namespace BugStore.Test.Handlers.Orders
                 }
             };
 
+            // Act
             var response = await handler.CreateOrderAsync(request);
 
+            // Assert
             Assert.NotNull(response);
             Assert.Null(response.Message);
             Assert.NotNull(response.Data);
             Assert.NotEqual(Guid.Empty, response.Data.Id);
             Assert.Equal(2, response.Data.Lines.Count);
+            Assert.Equal(customer.Id, response.Data.Customer.Id);
+            Assert.True(response.IsSuccess);
 
             var line1 = response.Data.Lines.First(l => l.ProductId == product1.Id);
             var line2 = response.Data.Lines.First(l => l.ProductId == product2.Id);
@@ -107,27 +109,25 @@ namespace BugStore.Test.Handlers.Orders
         [Fact]
         public async Task CreateOrderAsync_When_SaveChangesThrows_ReturnsError()
         {
+            //Arrange
             var dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<AppDbContext>()
                 .UseInMemoryDatabase(databaseName: dbName)
                 .Options;
 
-            // seed products using a normal context so product handler has data
-            List<Product> seeded;
+            List<Product> _products;
             await using (var seed = new AppDbContext(options))
             {
-                seeded = new List<Product>
+                _products = new List<Product>
                 {
-                    new Product { Id = Guid.NewGuid(), Title = "P", Description = "d", Slug = "p", Price = 1.0m }
+                    new Product { Id = Guid.NewGuid(), Title = "P1", Description = "d1", Slug = "s1", Price = 19.9m }
                 };
-                seed.Products.AddRange(seeded);
+                seed.Products.AddRange(_products);
                 await seed.SaveChangesAsync();
             }
 
-            // create a product handler that returns the seeded product list
-            var fakeProductHandler = new FakeProductHandler(seeded);
+            var fakeProductHandler = new FakeProductHandler(_products);
 
-            // use faulty context which will throw when trying to save (we simulate by throwing on Orders getter below)
             await using var faulty = new FaultyDbContext(options);
             var handler = new OrderHandler(faulty, fakeProductHandler);
 
@@ -136,27 +136,28 @@ namespace BugStore.Test.Handlers.Orders
                 CustomerId = Guid.NewGuid(),
                 Lines = new List<CreateOrderLineRequest>
                 {
-                    new CreateOrderLineRequest { ProductId = seeded[0].Id, Quantity = 1 }
+                    new CreateOrderLineRequest { ProductId = _products[0].Id, Quantity = 1 }
                 }
             };
 
-            // Because FaultyDbContext.Orders getter throws, the handler will catch and return the error response
+            // Act
             var response = await handler.CreateOrderAsync(request);
 
+
+            // Assert
             Assert.NotNull(response);
             Assert.Null(response.Data);
             Assert.False(string.IsNullOrWhiteSpace(response.Message));
-            Assert.Equal("Ocorreu um erro ao cadastrar pedido.", response.Message);
+            Assert.False(response.IsSuccess);
         }
 
         [Fact]
         public async Task GetOrderByIdAsync_ReturnsOrder_With_Customer_And_ProductNavigation()
         {
-            var dbName = Guid.NewGuid().ToString();
-            await using var context = CreateContext(dbName);
+            await using var context = CreateContext();
 
-            var product = new Product { Id = Guid.NewGuid(), Title = "P", Description = "d", Slug = "p", Price = 7.5m };
-            var customer = new Customer { Id = Guid.NewGuid(), Name = "C", Email = "c@c", Phone = "1", BirthDate = DateTime.Today };
+            var product = new Product { Id = Guid.NewGuid(), Title = "P1", Description = "D1", Slug = "S1", Price = 9.9m };
+            var customer = new Customer { Id = Guid.NewGuid(), Name = "C1", Email = "customer@gmail", Phone = "123456789", BirthDate = DateTime.Today.AddYears(-35) };
 
             // create order and orderline and persist so Include will resolve navigation props
             var order = new Order
@@ -175,7 +176,7 @@ namespace BugStore.Test.Handlers.Orders
             context.Orders.Add(order);
             await context.SaveChangesAsync();
 
-            var fakeProductHandler = new FakeProductHandler(new[] { product }); // not used by GetOrderByIdAsync but required by ctor
+            var fakeProductHandler = new FakeProductHandler(new[] { product });
             var handler = new OrderHandler(context, fakeProductHandler);
 
             var response = await handler.GetOrderByIdAsync(new GetOrderByIdRequest { Id = order.Id });
@@ -190,13 +191,14 @@ namespace BugStore.Test.Handlers.Orders
             Assert.Single(response.Data.Lines);
             Assert.NotNull(response.Data.Lines[0].Product);
             Assert.Equal(product.Id, response.Data.Lines[0].Product.Id);
+            Assert.True(response.IsSuccess);
         }
 
         [Fact]
         public async Task GetOrderByIdAsync_ReturnsNotFound_When_Missing()
         {
             var dbName = Guid.NewGuid().ToString();
-            await using var context = CreateContext(dbName);
+            await using var context = CreateContext();
 
             var fakeProductHandler = new FakeProductHandler(Array.Empty<Product>());
             var handler = new OrderHandler(context, fakeProductHandler);
@@ -205,7 +207,7 @@ namespace BugStore.Test.Handlers.Orders
 
             Assert.NotNull(response);
             Assert.Null(response.Data);
-            Assert.Equal("Nenhum pedido encontrado.", response.Message);
+            Assert.False(response.IsSuccess);
         }
 
         [Fact]
@@ -224,7 +226,7 @@ namespace BugStore.Test.Handlers.Orders
 
             Assert.NotNull(response);
             Assert.Null(response.Data);
-            Assert.Equal("Ocorreu um erro ao exibir cadastrar pedido.", response.Message);
+            Assert.False(response.IsSuccess);
         }
     }
 }

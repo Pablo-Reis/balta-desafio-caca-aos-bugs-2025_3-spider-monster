@@ -25,7 +25,7 @@ namespace BugStore.Test.Handlers.Customers
         }
 
         [Fact]
-        public async Task Should_Pass_When_Persist_Valid_Data()
+        public async Task CreateCustomerAsync_Should_CreateCustomer()
         {
             //Arrange
             await using var context = CreateContext();
@@ -62,7 +62,7 @@ namespace BugStore.Test.Handlers.Customers
         }
 
         [Fact]
-        public async Task Should_Pass_When_SaveChangesFails_ReturnsErrorResponse()
+        public async Task CreateCustomerAsync_When_SaveChangesFails_ReturnsErrorResponse()
         {
             //Arrange
             var options = new DbContextOptionsBuilder<AppDbContext>()
